@@ -1,9 +1,39 @@
 import os
 import numpy as np
 import tensorflow as tf
+import json
+from confluent_kafka import SerializingProducer
+from confluent_kafka.serialization import StringSerializer
+
+thresh = 0.75
+topic = 'video-scenes'
+
+conf = {'bootstrap.servers': 'localhost:9092',
+        'debug': 'msg',
+        'compression.codec': 'lz4',
+        'key.serializer': StringSerializer(codec='utf_8')
+        }
+producer: SerializingProducer = SerializingProducer(conf)
 
 
 class TransNetV2:
+    prev_scene = 0
+    video_path = ""
+    max_frame = 0
+
+    def emit_topic(self, cur_frame, score):
+        dictionary = {"video": self.video_path, "start": f"{self.prev_scene}", "end": f"{cur_frame}",
+                      "score": f"{score}"}
+        json_object = json.dumps(dictionary, indent=4)
+        self.prev_scene = cur_frame + 1
+        producer.produce(topic, key=None, value=json_object)
+
+    def find_frames_crossing_threshold(self, gap, predictions: np.ndarray):
+        indices = np.where(predictions > thresh)
+        if indices[0].size > 0:
+            for i in indices[0]:
+                self.emit_topic(cur_frame=gap + i, score=predictions[i])
+        producer.flush()
 
     def __init__(self, model_dir=None):
         if model_dir is None:
@@ -55,16 +85,17 @@ class TransNetV2:
                 yield out[np.newaxis]
 
         predictions = []
-
+        self.max_frame = len(frames)
         for inp in input_iterator():
             single_frame_pred, all_frames_pred = self.predict_raw(inp)
+            self.find_frames_crossing_threshold(len(predictions) * 50, single_frame_pred.numpy()[0, 25:75, 0])
             predictions.append((single_frame_pred.numpy()[0, 25:75, 0],
                                 all_frames_pred.numpy()[0, 25:75, 0]))
 
             print("\r[TransNetV2] Processing video frames {}/{}".format(
                 min(len(predictions) * 50, len(frames)), len(frames)
             ), end="")
-        print("")
+        self.emit_topic(cur_frame=self.max_frame + 1, score=1)
 
         single_frame_pred = np.concatenate([single_ for single_, all_ in predictions])
         all_frames_pred = np.concatenate([all_ for single_, all_ in predictions])
@@ -80,6 +111,7 @@ class TransNetV2:
                                       "install python wrapper by `pip install ffmpeg-python`.")
 
         print("[TransNetV2] Extracting frames from {}".format(video_fn))
+        self.video_path = video_fn
         video_stream, err = ffmpeg.input(video_fn).output(
             "pipe:", format="rawvideo", pix_fmt="rgb24", s="48x27"
         ).run(capture_stdout=True, capture_stderr=True)
@@ -88,7 +120,7 @@ class TransNetV2:
         return (video, *self.predict_frames(video))
 
     @staticmethod
-    def predictions_to_scenes(predictions: np.ndarray, threshold: float = 0.5):
+    def predictions_to_scenes(predictions: np.ndarray, threshold: float = thresh):
         predictions = (predictions > threshold).astype(np.uint8)
 
         scenes = []
