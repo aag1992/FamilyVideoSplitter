@@ -1,7 +1,8 @@
+import json
 import os
+
 import numpy as np
 import tensorflow as tf
-import json
 from confluent_kafka import SerializingProducer
 from confluent_kafka.serialization import StringSerializer
 
@@ -16,14 +17,17 @@ conf = {'bootstrap.servers': 'localhost:9092',
 producer: SerializingProducer = SerializingProducer(conf)
 
 
+# run python3 transnetv2.py ~/Documents/Projects/MemoryLane/data/amitai/hosen_2.mp4
 class TransNetV2:
     prev_scene = 0
     video_path = ""
     max_frame = 0
+    scene_number = 1
 
     def emit_topic(self, cur_frame, score):
         dictionary = {"video": self.video_path, "start": f"{self.prev_scene}", "end": f"{cur_frame}",
-                      "score": f"{score}"}
+                      "score": f"{score}", "index": f"{self.scene_number}"}
+        self.scene_number+=1
         json_object = json.dumps(dictionary, indent=4)
         self.prev_scene = cur_frame + 1
         producer.produce(topic, key=None, value=json_object)
@@ -183,42 +187,24 @@ class TransNetV2:
 
 
 def main():
-    import sys
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("files", type=str, nargs="+", help="path to video files to process")
     parser.add_argument("--weights", type=str, default=None,
                         help="path to TransNet V2 weights, tries to infer the location if not specified")
-    parser.add_argument('--visualize', action="store_true",
-                        help="save a png file with prediction visualization for each extracted video")
     args = parser.parse_args()
 
     model = TransNetV2(args.weights)
     for file in args.files:
-        if os.path.exists(file + ".predictions.txt") or os.path.exists(file + ".scenes.txt"):
-            print(f"[TransNetV2] {file}.predictions.txt or {file}.scenes.txt already exists. "
-                  f"Skipping video {file}.", file=sys.stderr)
-            continue
-
         video_frames, single_frame_predictions, all_frame_predictions = \
-            model.predict_video(file)
-
+        model.predict_video(file)
+        #
         predictions = np.stack([single_frame_predictions, all_frame_predictions], 1)
         np.savetxt(file + ".predictions.txt", predictions, fmt="%.6f")
 
         scenes = model.predictions_to_scenes(single_frame_predictions)
         np.savetxt(file + ".scenes.txt", scenes, fmt="%d")
-
-        if args.visualize:
-            if os.path.exists(file + ".vis.png"):
-                print(f"[TransNetV2] {file}.vis.png already exists. "
-                      f"Skipping visualization of video {file}.", file=sys.stderr)
-                continue
-
-            pil_image = model.visualize_predictions(
-                video_frames, predictions=(single_frame_predictions, all_frame_predictions))
-            pil_image.save(file + ".vis.png")
 
 
 if __name__ == "__main__":

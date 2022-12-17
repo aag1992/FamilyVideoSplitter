@@ -1,0 +1,6 @@
+setuptools~=60.2.0
+numpy~=1.23.5
+tensorflow~=2.11.0
+Pillow~=9.3.0
+h5py~=3.7.0
+transnetv2~=1.0.0
